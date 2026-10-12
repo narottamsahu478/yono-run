@@ -148,8 +148,10 @@ async def route_global_otp(
     )
 
     for game_key, track_data in pending:
-        if game_key not in active_requests_tracker:
+        if game_key not in active_requests_tracker or track_data.get("completed"):
             continue
+        if time.monotonic() < track_data.get("verify_retry_after", 0):
+            return False
         if (otp, game_key) in tested_game_otps:
             continue
 
@@ -168,7 +170,6 @@ async def route_global_otp(
         if send_time > otp_arrival_time:
             continue
 
-        tested_game_otps.add((otp, game_key))
         ui_name = track_data["ui_name"]
         result_future = track_data.get("result_future")
 
@@ -200,14 +201,16 @@ async def route_global_otp(
                 )
             ):
                 track_data["verify_response_lost"] = True
+                track_data["verify_retry_after"] = time.monotonic() + 5
                 await add_error_log(
                     phone, ui_name, f"Verify uncertain response: {v_msg}"
                 )
                 await update_live_status(
                     phone, f"{ui_name} Verify Uncertain", progress_val=75
                 )
-                continue
+                return False
 
+            tested_game_otps.add((otp, game_key))
             if any(
                 x in v_msg
                 for x in ("already used", "otp used", "duplicate", "consumed")
@@ -375,18 +378,19 @@ async def route_global_otp(
 
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             track_data["verify_response_lost"] = True
+            track_data["verify_retry_after"] = time.monotonic() + 5
             await add_error_log(
                 phone, ui_name, f"Verify Exception Lost : {type(e).__name__}"
             )
             await update_live_status(
                 phone, f"{ui_name} Verify Exception", progress_val=75
             )
-            continue
+            return False
         except Exception as e:
             await add_error_log(
                 phone, ui_name, f"Global route error: {type(e).__name__}"
             )
-            continue
+            return False
 
     return False
 
