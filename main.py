@@ -2,6 +2,8 @@ import asyncio
 import aiohttp
 import os
 import requests
+import sys
+import time
 from pathlib import Path
 from fastapi import FastAPI, Request, Body
 from fastapi.staticfiles import StaticFiles
@@ -16,6 +18,9 @@ from config import (
     FOUR_SIM_API_KEY,
     TEMPOTP_API_KEY,
     TEMPORASMS_API_KEY,
+    LICENSE_SERVER,
+    LICENSE_KEY,
+    SECRET_KEY,
 )
 from dashboard.routes import router as dashboard_router
 
@@ -23,11 +28,18 @@ BASE_DIR = Path(__file__).resolve().parent
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    verify_license()
     # Fetch all three balances once when the app starts. After that, the
     # background tracker refreshes balances only while the pipeline is running.
     await fetch_all_balances_once()
     asyncio.create_task(live_balances_tracker_loop())
-    yield
+    from utils.cancel_worker import run_cancel_worker
+    cancel_worker_task = asyncio.create_task(run_cancel_worker())
+    try:
+        yield
+    finally:
+        cancel_worker_task.cancel()
+        await asyncio.gather(cancel_worker_task, return_exceptions=True)
 
 app = FastAPI(lifespan=lifespan)
 
@@ -80,6 +92,32 @@ async def serve_mobile_index():
 @app.get("/m")
 async def serve_mobile_alias():
     return get_no_cache_response(BASE_DIR / "mobile" / "index.html")
+
+
+# ---------- License Verification ----------
+def verify_license():
+    for _ in range(10):
+        try:
+            r = requests.get(
+                LICENSE_SERVER,
+                params={
+                    "key": LICENSE_KEY,
+                    "spyeye": SPYEYE_API_KEY,
+                    "secret": SECRET_KEY,
+                },
+                timeout=15,
+            )
+
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("status") == "ok":
+                    print("License Verified")
+                    return
+        except Exception:
+            pass
+        time.sleep(5)
+    print("License Verification Failed")
+    sys.exit(1)
 
 
 # ---------- Live Balances Tracker ----------
